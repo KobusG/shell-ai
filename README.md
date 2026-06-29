@@ -39,11 +39,13 @@ Shell-AI will then suggest 3 commands to fulfill your request:
 - **Command Suggestions**: Get single-line command suggestions that accomplish what you asked for.
 - **Cross-Platform**: Works on Linux, macOS, and Windows.
 - **Azure Compatibility**: Shell-AI now supports Azure OpenAI deployments.
+- **Gemini Compatibility**: Shell-AI can use Gemini as a first-class provider with JSON structured output and Google Search grounding.
 
 ## Configuration
 ### Environment Variables
 
-1. **`OPENAI_API_KEY`**: Required. Set this environment variable to your OpenAI API key. You can find it on your [OpenAI Dashboard](https://beta.openai.com/account/api-keys).
+1. **`OPENAI_API_KEY`**: Required for OpenAI and Azure. Set this environment variable to your OpenAI API key. You can find it on your [OpenAI Dashboard](https://beta.openai.com/account/api-keys).
+2. **`GEMINI_API_KEY`**: Required when `SHAI_API_PROVIDER` is set to `gemini`.
 
 ### Optional Variables
 
@@ -52,9 +54,10 @@ Shell-AI will then suggest 3 commands to fulfill your request:
 3. **`OPENAI_API_BASE`**: Defaults to `https://api.openai.com/v1`. You can set it to specify the proxy or service emulator.
 4. **`OPENAI_ORGANIZATION`**: OpenAI Organization ID
 5. **`OPENAI_PROXY`**: OpenAI proxy
-6. **`OPENAI_API_TYPE`**: Set to "azure" if you are using Azure deployments.
-7. **`AZURE_DEPLOYMENT_NAME`**: Your Azure deployment name (required if using Azure).
-8. **`AZURE_API_BASE`**: Your Azure API base (required if using Azure).
+6. **`SHAI_API_PROVIDER`**: Set to `openai`, `azure`, or `gemini`. `OPENAI_API_TYPE` is still accepted for existing Azure/OpenAI configs.
+7. **`GEMINI_MODEL`**: Defaults to `gemini-3.5-flash`. Used when `SHAI_API_PROVIDER=gemini`.
+8. **`AZURE_DEPLOYMENT_NAME`**: Your Azure deployment name (required if using Azure).
+9. **`AZURE_API_BASE`**: Your Azure API base (required if using Azure).
 
 ### Configuration File
 
@@ -72,6 +75,19 @@ Example `config.json`:
   "SHAI_SUGGESTION_COUNT": "3"
 }
 ```
+
+Gemini config example:
+
+```json
+{
+  "SHAI_API_PROVIDER": "gemini",
+  "GEMINI_API_KEY": "your_gemini_api_key_here",
+  "GEMINI_MODEL": "gemini-3.5-flash",
+  "SHAI_SUGGESTION_COUNT": "3"
+}
+```
+
+The Gemini provider requests JSON structured output and enables Google Search grounding. Its prompt tells Gemini to search when unsure and to prefer `man-pages` queries for shell tool documentation.
 
 The application will read from this file if it exists, overriding any existing environment variables.
 

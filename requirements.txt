@@ -2,3 +2,4 @@ langchain==0.0.268
 InquirerPy~=0.3
 openai~=0.27
 mistune~=3.0.1
+google-genai~=1.0
