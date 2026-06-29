@@ -5,6 +5,8 @@ import textwrap
 from enum import Enum
 import json
 
+from google import genai
+
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 from langchain.chat_models import AzureChatOpenAI, ChatOpenAI
@@ -18,9 +20,10 @@ class SelectSystemOptions(Enum):
     OPT_DISMISS = "Dismiss"
 
 
-class OpenAIOptions(Enum):
+class APIProvider(Enum):
     openai = "openai"
     azure = "azure"
+    gemini = "gemini"
 
 
 def main():
@@ -30,6 +33,8 @@ def main():
 
     Allowed envionment variables:
     - OPENAI_MODEL: The name of the OpenAI model to use. Defaults to `gpt-3.5-turbo`.
+    - GEMINI_API_KEY: Your Gemini API key when SHAI_API_PROVIDER is `gemini`.
+    - GEMINI_MODEL: The Gemini model to use. Defaults to `gemini-3.5-flash`.
     - SHAI_SUGGESTION_COUNT: The number of suggestions to generate. Defaults to 3.
     - SHAI_SKIP_CONFIRM: Skip confirmation of the command to execute. Defaults to false. Set to `true` to skip confirmation.
 
@@ -46,7 +51,9 @@ def main():
     for key, value in loaded_config.items():
         os.environ[key] = str(value)
 
-    if os.environ.get("OPENAI_API_KEY") is None:
+    SHAI_API_PROVIDER = os.environ.get("SHAI_API_PROVIDER", os.environ.get("OPENAI_API_TYPE", "openai"))
+
+    if SHAI_API_PROVIDER != "gemini" and os.environ.get("OPENAI_API_KEY") is None:
         print(
             "Please set the OPENAI_API_KEY environment variable to your OpenAI API key."
         )
@@ -56,6 +63,7 @@ def main():
         sys.exit(1)
 
     OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
+    GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
     OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", None)
     OPENAI_ORGANIZATION = os.environ.get("OPENAI_ORGANIZATION", None)
     OPENAI_PROXY = os.environ.get("OPENAI_PROXY", None)
@@ -63,11 +71,11 @@ def main():
 
     # required configs just for azure openai deployments (faster)
 
-    OPENAI_API_TYPE = os.environ.get("OPENAI_API_TYPE", "openai")
+    OPENAI_API_TYPE = SHAI_API_PROVIDER
     OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2023-05-15")
-    if OPENAI_API_TYPE not in OpenAIOptions.__members__:
+    if OPENAI_API_TYPE not in APIProvider.__members__:
         print(
-            f"Your OPENAI_API_TYPE is not valid. Please choose one of {OpenAIOptions.__members__}"
+            f"Your SHAI_API_PROVIDER is not valid. Please choose one of {APIProvider.__members__}"
         )
         sys.exit(1)
     AZURE_DEPLOYMENT_NAME = os.environ.get("AZURE_DEPLOYMENT_NAME", None)
@@ -85,7 +93,12 @@ def main():
 
     # End loading configuration
 
-    if OPENAI_API_TYPE == "openai":
+    if OPENAI_API_TYPE == "gemini":
+        if os.environ.get("GEMINI_API_KEY") is None:
+            print("Please set the GEMINI_API_KEY environment variable to your Gemini API key.")
+            sys.exit(1)
+        chat = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    elif OPENAI_API_TYPE == "openai":
         chat = ChatOpenAI(
             model_name=OPENAI_MODEL,
             n=SHAI_SUGGESTION_COUNT,
@@ -93,7 +106,7 @@ def main():
             openai_organization=OPENAI_ORGANIZATION,
             openai_proxy=OPENAI_PROXY,
         )
-    if OPENAI_API_TYPE == "azure":
+    elif OPENAI_API_TYPE == "azure":
         chat = AzureChatOpenAI(
             n=SHAI_SUGGESTION_COUNT,
             openai_api_base=AZURE_API_BASE,
@@ -108,28 +121,67 @@ def main():
         content="""You are an expert at using shell commands. I need you to provide a response in the format `{"command": "your_shell_command_here"}`. Only provide a single executable line of shell code as the value for the "command" key. Never output any text outside the JSON structure. The command will be directly executed in a shell. For example, if I ask to display the message 'Hello, World!', you should respond with ```json\n{"command": "echo 'Hello, World!'"}```"""
     )
 
+    command_response_schema = {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "A single executable line of shell code."
+            }
+        },
+        "required": ["command"],
+    }
+
     def get_suggestions(prompt):
-        response = chat.generate(
-            messages=[
-                [
-                    system_message,
-                    HumanMessage(content=f"Here's what I'm trying to do: {prompt}"),
-                ]
-            ]
-        )
-        
-        # Extract commands from the JSON response
         commands = []
-        for msg in response.generations[0]:
-            try:
-                json_content = code_parser(msg.message.content)
-                command_json = json.loads(json_content)
-                command = command_json.get("command", "")
-                if command:  # Ensure the command is not empty
-                    commands.append(command)
-            except json.JSONDecodeError:
-                # Fallback: treat the message as a command
-                commands.append(msg.message.content)
+
+        if OPENAI_API_TYPE == "gemini":
+            gemini_input = (
+                f"{system_message.content}\n\n"
+                "When you are unsure about a shell tool, option, flag, or the safest command to use, "
+                "use Google Search before answering. Prefer searches for official documentation and "
+                "include the term 'man-pages' when searching for shell tools.\n\n"
+                f"Here's what I'm trying to do: {prompt}"
+            )
+            for _ in range(SHAI_SUGGESTION_COUNT):
+                interaction = chat.interactions.create(
+                    model=GEMINI_MODEL,
+                    input=gemini_input,
+                    tools=[{"type": "google_search"}],
+                    response_format={
+                        "type": "text",
+                        "mime_type": "application/json",
+                        "schema": command_response_schema,
+                    },
+                )
+                try:
+                    command_json = json.loads(interaction.output_text)
+                    command = command_json.get("command", "")
+                    if command:
+                        commands.append(command)
+                except json.JSONDecodeError:
+                    commands.append(interaction.output_text)
+        else:
+            response = chat.generate(
+                messages=[
+                    [
+                        system_message,
+                        HumanMessage(content=f"Here's what I'm trying to do: {prompt}"),
+                    ]
+                ]
+            )
+
+            # Extract commands from the JSON response
+            for msg in response.generations[0]:
+                try:
+                    json_content = code_parser(msg.message.content)
+                    command_json = json.loads(json_content)
+                    command = command_json.get("command", "")
+                    if command:  # Ensure the command is not empty
+                        commands.append(command)
+                except json.JSONDecodeError:
+                    # Fallback: treat the message as a command
+                    commands.append(msg.message.content)
 
         # Deduplicate commands
         commands = list(set(commands))
